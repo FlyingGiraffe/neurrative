@@ -61,7 +61,7 @@ def main():
   processed_file = os.path.join(book_dir, "processed.json")
   embedding_file = os.path.join(book_dir, "embeddings", args.model, "embeddings.npy")
 
-  with open(processed_file, "r") as f:
+  with open(processed_file, "r", encoding="utf-8") as f:
     processed = json.load(f)
   
   paragraphs = processed["paragraphs"]
