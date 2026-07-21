@@ -75,7 +75,7 @@ def main():
 
   print("Running PCA...")
 
-  pca = PCA(n_components=2)
+  pca = PCA(n_components=3)
 
   pca_coords = pca.fit_transform(embeddings)
   np.save(os.path.join(output_dir, "pca.npy"), pca_coords)
@@ -92,7 +92,7 @@ def main():
   print("Running UMAP...")
 
   umap = UMAP(
-    n_components=2,
+    n_components=3,
     n_neighbors=args.neighbors,
     min_dist=args.min_dist,
     random_state=args.seed,
