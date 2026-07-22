@@ -1,35 +1,75 @@
-import os
-import argparse
-import json
-import re
+# Robust Project Gutenberg play preprocessor.
+# Supports Shakespeare (_Ham._), Wilde/Ibsen (NORA., MRS. MARCHMONT.)
+# and ACT/FIRST ACT formats.
 
+import argparse, json, os, re
 
-START_RE = re.compile(r"\*\*\*\s*START OF THE PROJECT GUTENBERG")
-END_RE = re.compile(r"\*\*\*\s*END OF THE PROJECT GUTENBERG")
+START_RE = re.compile(r"\*\*\*\s*START OF THE PROJECT GUTENBERG", re.I)
+END_RE = re.compile(r"\*\*\*\s*END OF THE PROJECT GUTENBERG", re.I)
+ACT_RE = re.compile(
+  r"^(?:ACT\s+([IVXLCDM]+)|"
+  r"(FIRST|SECOND|THIRD|FOURTH|FIFTH)\s+ACT)\.?$", re.I
+)
 
-ACT_RE = re.compile(r"^\s*ACT\s+([IVXLC]+)", re.IGNORECASE)
+ORD = {"FIRST":"I", "SECOND":"II", "THIRD":"III", "FOURTH":"IV", "FIFTH":"V"}
 
-# Example:
-#   _Hor._ Tush! tush! 'twill not appear.
-#   _Ber._ Come, let us...
-SPEAKER_RE = re.compile(r"^\s*_([^_]+)\._\s*(.*)$")
+SHAKESPEARE = re.compile(r"^_([^_]+)\._\s*(.*)$")
+PLAIN = re.compile(r"^([A-Z][A-Z .,'’\-]+?)\.\s*(.*)$")
 
+EDITORIAL = [
+  re.compile(r"^\[illustration.*\]$", re.I),
+  re.compile(r"^\[footnote:.*\]$", re.I),
+  re.compile(r"^\[transcriber's note:.*\]$", re.I),
+  re.compile(r"^\[editor.?s note:.*\]$", re.I),
+]
 
-def strip_gutenberg(lines):
-  start = 0
-  end = len(lines)
+def strip(lines):
+  s, e = 0, len(lines)
 
-  for i, line in enumerate(lines):
-    if START_RE.search(line):
-      start = i + 1
+  for i, l in enumerate(lines):
+    if START_RE.search(l):
+      s = i + 1
       break
-
-  for i in range(len(lines) - 1, -1, -1):
+  
+  for i in range(len(lines)-1, -1, -1):
     if END_RE.search(lines[i]):
-      end = i
+      e = i
       break
+  
+  return lines[s:e]
 
-  return lines[start:end]
+
+def norm(x):
+  return " ".join(x.strip().split())
+
+
+def parse_speaker(line):
+  m = SHAKESPEARE.match(line)
+
+  if m:
+    return m.group(1).strip(), m.group(2).strip()
+  
+  m = PLAIN.match(line)
+  if m:
+    name = m.group(1).strip()
+    if len(name.split()) > 8:
+      return None
+    return name.title(), m.group(2).strip()
+  
+  return None
+
+
+def stage(line):
+  l = line.lower()
+
+  if (line.startswith("_") and line.endswith("_")) or (line.startswith("[") and line.endswith("]")):
+    return True
+  
+  for w in ["enter", "exit", "exeunt", "aside", "scene", "curtain", "flourish", "alarum"]:
+    if w in l:
+      return True
+  
+  return False
 
 
 def main():
@@ -37,127 +77,105 @@ def main():
   parser.add_argument("--book", required=True)
   args = parser.parse_args()
 
-  book_path = os.path.join("books", args.book, "raw.txt")
-  output_path = os.path.join("books", args.book, "processed.json")
-
-  with open(book_path, encoding="utf8") as f:
-    lines = strip_gutenberg(f.readlines())
+  inp = os.path.join("books", "play", args.book, "raw.txt")
+  out = os.path.join("books", "play", args.book, "processed.json")
+  
+  lines = strip(open(inp, encoding="utf8").readlines())
 
   chapters = []
   paragraphs = []
 
-  current_act = None
-
+  pending = None
+  current = -1
+  pidx = 0
+  gidx = 0
   speech = []
-
-  chapter_id = -1
-  paragraph_index = 0
-  global_index = 0
+  seen = False
 
   def flush():
-    nonlocal speech, paragraph_index, global_index
+    nonlocal speech, pidx, gidx
 
-    if current_act is None:
-      speech = []
+    if current < 0 or not speech:
+      speech=[]
       return
+    
+    txt=" ".join(speech).strip()
+    if txt:
+      paragraphs.append({
+        "id": f"raw_p{gidx:04d}",
+        "global_index": gidx,
+        "chapter_id": current,
+        "paragraph_index": pidx,
+        "text": txt}
+      )
+      gidx += 1
+      pidx += 1
+    speech=[]
 
-    text = " ".join(speech).strip()
-
-    if len(text) == 0:
-      speech = []
-      return
-
-    paragraphs.append(
-      {
-        "id": f"raw_p{global_index:04d}",
-        "global_index": global_index,
-        "chapter_id": chapter_id,
-        "paragraph_index": paragraph_index,
-        "text": text,
-      }
+  def start(act):
+    nonlocal current, pidx
+    if chapters:
+      chapters[-1]["paragraph_range"][1] = gidx-1
+    current += 1
+    pidx = 0
+    chapters.append({
+      "chapter_id": current,
+      "chapter_number": act,
+      "title": f"ACT {act}",
+      "paragraph_range": [gidx, None]}
     )
-    paragraph_index += 1
-    global_index += 1
-    speech = []
 
   for raw in lines:
-    line = " ".join(raw.strip().split())
-
-    if len(line) == 0:
+    line = norm(raw)
+    if (
+      (not line) or
+      (any(r.match(line) for r in EDITORIAL)) or
+      (re.fullmatch(r"[\-*_=~. ]+", line)) or
+      (line.lower() in {"contents", "the persons of the play", "dramatis personae", "scene"})
+    ):
       continue
 
     m = ACT_RE.match(line)
     if m:
       flush()
-      # Finish previous chapter
-      if len(chapters) > 0:
-        chapters[-1]["paragraph_range"][1] = global_index - 1
-      chapter_id += 1
-      paragraph_index = 0
-      current_act = f"ACT {m.group(1)}"
-
-      chapters.append(
-        {
-          "chapter_id": chapter_id,
-          "chapter_number": m.group(1),
-          "title": current_act,
-          "paragraph_range": [global_index, None],
-        }
-      )
+      pending = m.group(1) or ORD[m.group(2).upper()]
       continue
 
-    # Ignore everything before ACT I
-    if current_act is None:
-      continue
+    sp = parse_speaker(line)
+    if sp:
+      if pending is not None:
+        start(pending)
+        pending = None
 
-    m = SPEAKER_RE.match(line)
-
-    if m:
-      flush()
-      speaker = m.group(1).strip()
-      first_line = m.group(2).strip()
-
-      # Skip stage directions
-      if any(word in speaker.lower() for word in ["enter", "exit", "exeunt", "re-enter"]):
-        speech = []
+      if current < 0:
         continue
 
-      speech = []
-
-      if len(first_line):
-        speech.append(f"{speaker}: {first_line}")
-      else:
-        speech.append(f"{speaker}:")
-
+      seen=True
+      flush()
+      n, first = sp
+      speech = [f"{n}: {first}" if first else f"{n}:"]
       continue
 
-    # Ignore standalone stage directions
-    if line.startswith("_") and line.endswith("_"):
-      continue
+    if (not seen) or (stage(line)): continue
 
-    speech.append(line)
+    line=re.sub(r"_\[[^\]]*\]_\.?", "", line).strip()
+    if line: 
+      speech.append(line)
 
   flush()
-
-  # Finish final chapter
-  if len(chapters) > 0:
-    chapters[-1]["paragraph_range"][1] = global_index - 1
-
-  output = {
-    "metadata": {
-      "title": args.book,
-      "source": "Project Gutenberg",
+  if chapters:
+    chapters[-1]["paragraph_range"][1] = gidx - 1
+  
+  json.dump(
+    {
+      "metadata": {"title": args.book, "source": "Project Gutenberg"},
+      "chapters": chapters,
+      "paragraphs": paragraphs,
     },
-    "chapters": chapters,
-    "paragraphs": paragraphs,
-  }
+    open(out, "w", encoding="utf8"), indent=2, ensure_ascii=False)
+  
+  print(len(chapters), "chapters")
+  print(len(paragraphs), "paragraphs")
 
-  with open(output_path, "w", encoding="utf8") as f:
-    json.dump(output, f, indent=2, ensure_ascii=False)
-
-  print(f"{len(chapters)} chapters")
-  print(f"{len(paragraphs)} paragraphs")
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
   main()

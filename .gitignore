@@ -1,2 +1,8 @@
-embeddings/
+books/
 output/
+old/
+slurm/
+
+*.out
+
+__pycache__/

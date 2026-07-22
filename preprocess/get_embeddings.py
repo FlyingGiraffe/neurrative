@@ -15,8 +15,8 @@ books/
 
 Examples:
 
-python get_embeddings.py --book alice_wonderland --model bge-m3
-python get_embeddings.py --book alice_wonderland --model qwen3-embedding --batch-size 8
+python preprocess/get_embeddings.py --book standard/alice_wonderland --model bge-m3
+python preprocess/get_embeddings.py --book standard/alice_wonderland --model qwen3-embedding --batch-size 8
 """
 
 import os

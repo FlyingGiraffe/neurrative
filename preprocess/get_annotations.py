@@ -6,31 +6,46 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-SYSTEM_PROMPT = """You are a literary analysis assistant.
+def load_score_dimensions(book):
+  filename = os.path.join("books", book, "metadata", "score_dimensions.txt")
+
+  with open(filename) as f:
+    return [
+      line.strip()
+      for line in f
+      if line.strip() and not line.startswith("#")
+    ]
+
+def build_system_prompt(score_dimensions):
+  score_lines = "\n".join(
+    f'    "{name}": float,'
+    for name in score_dimensions
+  )
+
+  return (
+f"""You are a literary analysis assistant.
 
 For the given paragraph, output ONLY valid JSON.
 
-The JSON format is:
+The JSON format is
 
-{
-  "scores": {
-    "wonder": float,
-    "danger": float,
-    "sadness": float,
-    "humor": float,
-    "confusion": float,
-    "curiosity": float
-  },
+{{
+  "scores": {{
+{score_lines}
+  }},
   "summary": "...",
   "keywords": ["...", "...", "..."],
   "characters": ["...", "..."]
-}
+}}
 
 All scores must be between 0 and 1.
+
+Each score should represent how strongly that aspect is expressed in this paragraph.
 
 Do not output Markdown.
 Do not explain anything.
 """
+  )
 
 
 def build_prompt(paragraph):
@@ -61,12 +76,15 @@ def main():
     processed = json.load(f)
   paragraphs = processed["paragraphs"]
 
+  score_dimensions = load_score_dimensions(args.book)
+  system_prompt = build_system_prompt(score_dimensions)
+
   results = []
   for paragraph in tqdm(paragraphs):
     messages = [
       {
         "role": "system",
-        "content": SYSTEM_PROMPT,
+        "content": system_prompt,
       },
       {
         "role": "user",
